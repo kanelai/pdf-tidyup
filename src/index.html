@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' blob: data:; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline';" />
+    <title>PDF Thumbnails Viewer</title>
+    <style>
+      html, body { margin: 0; height: 100%; font-family: -apple-system, system-ui, Arial; }
+      #app { display: flex; height: 100%; flex-direction: column; }
+      #toolbar {
+        padding: 8px; border-bottom: 1px solid #eee; display: flex; gap: 8px; align-items: center;
+      }
+      #toolbar button {
+        padding: 8px 14px;
+        font-size: 14px;
+        height: 36px;
+        border-radius: 6px;
+        border: 1px solid #ddd;
+        background: #f5f5f5;
+        cursor: pointer;
+        transition: background 0.2s;
+      }
+      #toolbar button:hover {
+        background: #eaeaea;
+      }
+      #pickBtn { padding: 6px 10px; cursor: pointer; }
+      #folderPath { flex: 1; font-size: 12px; color: #555; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      #mainContent { display: flex; flex: 1; overflow: hidden; }
+      #sidebar {
+        width: 380px; border-right: 1px solid #ddd; display: flex; flex-direction: column; min-width: 220px; max-width: 60vw;
+      }
+      #sidebarResizer { width: 6px; cursor: col-resize; background: transparent; position: relative; }
+      #sidebarResizer::after { content: ''; position: absolute; left: 2px; top: 0; bottom: 0; width: 2px; background: #eee; }
+      #list { overflow: auto; padding: 8px; display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 12px; align-content: start; }
+      .item { display: flex; flex-direction: column; align-items: center; justify-content: flex-start; padding: 6px; border: 1px solid #eee; border-radius: 6px; cursor: pointer; background: #fafafa; }
+      .item:hover { background: #f2f2f2; }
+      .thumb { width: 100px; height: 140px; background: #fff; border: 1px solid #ddd; border-radius: 4px; display: flex; align-items: center; justify-content: center; overflow: hidden; margin-bottom: 6px; position: relative; }
+      .page-count { position: absolute; bottom: 4px; right: 4px; background: rgba(0, 0, 0, 0.7); color: #fff; font-size: 10px; padding: 2px 4px; border-radius: 3px; font-weight: 500; }
+      .name { display: block; font-size: 11px; color: #555; text-align: center; max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      /* selection highlight */
+      .item.selected { outline: 2px solid #4a90e2; background: #eaf3ff; }
+      #viewer { flex: 1; position: relative; display: flex; flex-direction: column; }
+      #viewerHeader { padding: 8px 12px; border-bottom: 1px solid #eee; display: flex; align-items: center; gap: 10px; }
+      #selectedName { font-size: 13px; color: #333; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      #columnsBadge { margin-left: auto; font-size: 12px; color: #333; background: #f0f3f8; border: 1px solid #d9e2ef; padding: 3px 8px; border-radius: 999px; }
+      #canvasWrap { flex: 1; overflow: auto; background: #f7f7f7; display: flex; align-items: stretch; justify-content: center; }
+      #previewGrid { flex: 1; display: grid; grid-template-columns: 1fr; align-content: start; justify-items: center; gap: 12px; padding: 16px; }
+      /* multi selection grid */
+      #previewGrid.multi { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+      .previewCanvas { background: #fff; box-shadow: 0 0 12px rgba(0,0,0,0.08); border: 1px solid #e5e5e5; }
+      .hint { font-size: 12px; color: #777; }
+      /* toast */
+      #toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.8); color: #fff; padding: 10px 14px; border-radius: 6px; font-size: 13px; display: none; z-index: 9999; }
+      #toast.success { background: rgba(46, 204, 113, 0.95); }
+      #toast.error { background: rgba(231, 76, 60, 0.95); }
+      /* context menu */
+      #ctxMenu { position: fixed; display: none; z-index: 10000; background: #fff; border: 1px solid #ddd; box-shadow: 0 4px 16px rgba(0,0,0,0.12); border-radius: 6px; min-width: 160px; overflow: hidden; }
+      .ctx-item { padding: 8px 12px; font-size: 13px; cursor: pointer; }
+      .ctx-item:hover { background: #f5f5f5; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <div id="toolbar">
+        <button id="pickBtn">Choose Folder</button>
+        <div id="folderPath" title=""></div>
+        <progress id="thumbProgress" max="100" value="0" style="width: 140px; display: none;"></progress>
+        <span id="thumbProgressText" class="hint" style="display: none;">0%</span>
+        <button id="clearCacheBtn" title="Clear cached hashes and thumbnails">Clear Cache</button>
+        <div id="thresholdWrap" style="display: flex; align-items: center; gap: 6px; margin-left: 8px;">
+          <label for="thresholdSlider" title="Dashed separators appear when the Hamming distance between adjacent pHashes exceeds this threshold. Lower values create more, tighter groups; higher values create fewer, larger groups.">Threshold</label>
+          <input type="range" id="thresholdSlider" min="1" max="64" value="16" style="vertical-align: middle;">
+          <span id="thresholdValue">16</span>
+        </div>
+      </div>
+      <div id="mainContent">
+        <div id="sidebar">
+          <div id="list" aria-label="PDF list"></div>
+        </div>
+        <div id="sidebarResizer" aria-hidden="true"></div>
+        <div id="viewer">
+          <div id="viewerHeader">
+            <div id="selectedName" class="hint">No file selected</div>
+            <div id="columnsBadge" title="Selection and grid info" style="display:none;">0 selected</div>
+          </div>
+          <div id="canvasWrap">
+            <div id="previewGrid"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="./renderer/app.js"></script>
+    <div id="toast"></div>
+    <div id="ctxMenu">
+      <div class="ctx-item" id="ctxOpen">Open</div>
+      <div class="ctx-item" id="ctxReveal">Reveal in Finder/Explorer</div>
+      <div class="ctx-item" id="ctxDelete">Delete</div>
+    </div>
+  </body>
+</html>
